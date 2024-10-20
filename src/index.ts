@@ -4,6 +4,7 @@ import { jsonParser } from './parseJson';
 import { readFile } from 'fs/promises';
 import { NotLoadedError, ParseError, ReadError } from './errors';
 import isEqual from 'lodash.isequal';
+import { readFileSync } from 'fs';
 
 type ZodConfigSchemaMap = {
     [key: string]: ZodConfigProperty;
@@ -235,13 +236,38 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
         // Store the object or file reference for later use.
         this.objectOrFileRef = objectOrFileRef;
 
-        const configValues: Record<string, unknown> =
+        this.loadValues(
             typeof this.objectOrFileRef === 'string'
                 ? await this.loadFile(this.objectOrFileRef)
-                : this.objectOrFileRef;
+                : this.objectOrFileRef,
+        );
+    }
 
+    /**
+     * Loads configuration from a given object or file reference synchronously.
+     * If a file path is provided, the configuration will be loaded from the file.
+     * If an object is provided, it will be used directly as the configuration.
+     * The loaded configuration is then merged with environment values and parsed.
+     * @param objectOrFileRef A configuration object or a file path to load the configuration from.
+     */
+    public loadSync(objectOrFileRef: Record<string, unknown> | string): void {
+        // Store the object or file reference for later use.
+        this.objectOrFileRef = objectOrFileRef;
+
+        this.loadValues(
+            typeof this.objectOrFileRef === 'string'
+                ? this.loadFileSync(this.objectOrFileRef)
+                : this.objectOrFileRef,
+        );
+    }
+
+    /**
+     * Loads configuration values from a given object.
+     * @param values The object to load the configuration values from.
+     */
+    private loadValues(values: Record<string, unknown>): void {
         const envValues = this.getEnvValues();
-        this.parseObject({ ...configValues, ...envValues });
+        this.parseValues({ ...values, ...envValues });
 
         // Start the reload interval if it is not already running.
         if (!this.intervalCallback && this.reloadIntervalMs)
@@ -300,7 +326,7 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
      * Parses the given object using the compiled schema and assigns the result to the `currentConfigValue` property.
      * @param object The object to be parsed, represented as a record with string keys and unknown values.
      */
-    private parseObject(object: Record<string, unknown>): void {
+    private parseValues(object: Record<string, unknown>): void {
         const oldConfig = this._currentConfigValue;
 
         this._currentConfigValue = this.compiledSchema.parse(object);
@@ -344,7 +370,7 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
     }
 
     /**
-     * Loads and parses a configuration file.
+     * Loads and parses a configuration file asynchronous.
      * @param fileRef The path reference to the configuration file.
      * @returns A promise that resolves to a record containing the parsed configuration data.
      */
@@ -355,7 +381,18 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
     }
 
     /**
-     * Reads the content of a file at the specified file path.
+     * Loads and parses a configuration file.
+     * @param fileRef The path reference to the configuration file.
+     * @returns A record containing the parsed configuration data.
+     */
+    private loadFileSync(fileRef: string): Record<string, unknown> {
+        const pathToConfig = path.resolve(fileRef);
+        const config = this.readFileSync(pathToConfig);
+        return this.parseConfig(config);
+    }
+
+    /**
+     * Reads the content of a file at the specified file path asynchronous.
      * @param filePath The path to the file to be read.
      * @returns A promise that resolves to the utf-8 encoded content of the file as a string.
      * @throws A ReadError if the file cannot be read.
@@ -363,6 +400,24 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
     private async readFile(filePath: string): Promise<string> {
         try {
             return await readFile(filePath, { encoding: 'utf-8' });
+        } catch {
+            this.logger(
+                `Could not read file at ${filePath}.`,
+                this.getLogLevel('error'),
+            );
+            throw new ReadError(`Could not read file at ${filePath}.`);
+        }
+    }
+
+    /**
+     * Reads the content of a file at the specified file path.
+     * @param filePath The path to the file to be read.
+     * @returns The utf-8 encoded content of the file as a string.
+     * @throws A ReadError if the file cannot be read.
+     */
+    private readFileSync(filePath: string): string {
+        try {
+            return readFileSync(filePath, { encoding: 'utf-8' });
         } catch {
             this.logger(
                 `Could not read file at ${filePath}.`,

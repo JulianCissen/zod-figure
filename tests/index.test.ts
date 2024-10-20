@@ -85,11 +85,13 @@ describe('ZodConfig', () => {
             './fixtures/test-config.json',
         );
 
-        jest.spyOn(fsPromise, 'readFile').mockResolvedValue('invalid');
-
+        const mockedReadFile = jest
+            .spyOn(fsPromise, 'readFile')
+            .mockResolvedValue('invalid');
         await expect(zodConfig.load(configFilePath)).rejects.toThrow(
             ParseError,
         );
+        mockedReadFile.mockRestore();
     });
 
     it('should throw an error if no configuration is loaded', () => {
@@ -326,5 +328,17 @@ describe('ZodConfig', () => {
         zodConfig.get('host');
         expect(consoleDebugSpy).not.toBeCalled();
         consoleDebugSpy.mockRestore();
+    });
+
+    it('should load configuration from a file synchronously', async () => {
+        const configFilePath = path.resolve(
+            __dirname,
+            './fixtures/test-config.json',
+        );
+        zodConfig.loadSync(configFilePath);
+        const configObject = JSON.parse(
+            await readFile(configFilePath, 'utf-8'),
+        );
+        expect(zodConfig['currentConfigValue']).toEqual(configObject);
     });
 });
