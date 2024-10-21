@@ -1,10 +1,11 @@
-import path from 'path';
-import { z } from 'zod';
-import { jsonParser } from './parseJson';
-import { readFile } from 'fs/promises';
-import { NotLoadedError, ParseError, ReadError } from './errors';
+import { AdapterError, NotLoadedError } from './errors';
+import { type LogFunction, type LogLevelsMap, Logger } from './Logger';
+import type { Adapter } from './adapters/Adapter';
+import { JsonAdapter } from './adapters/JsonAdapter';
+import { ObjectAdapter } from './adapters/ObjectAdapter';
+import { YamlAdapter } from './adapters/YamlAdapter';
 import isEqual from 'lodash.isequal';
-import { readFileSync } from 'fs';
+import { z } from 'zod';
 
 type ZodConfigSchemaMap = {
     [key: string]: ZodConfigProperty;
@@ -22,44 +23,29 @@ type ListenerMap<T> = {
     [K in ObjectKeys<T>]?: ListenerFunction<T[K]>[];
 };
 
-type LogLevels = 'silent' | 'debug' | 'info' | 'error';
-type LogMethod = (message: string, level: LogLevels) => void;
-type LogEvents =
-    | 'get'
-    | 'set'
-    | 'load'
-    | 'reload'
-    | 'compiledSchema'
-    | 'startReloadInterval'
-    | 'stopReloadInterval'
-    | 'error'
-    | 'runListeners'
-    | 'registeredListener';
-type LogLevelsMap = Record<LogEvents, LogLevels>;
-const defaultLogLevels: LogLevelsMap = {
-    // debug
-    get: 'debug',
-    runListeners: 'debug',
-    set: 'debug',
-    startReloadInterval: 'debug',
-    stopReloadInterval: 'debug',
-    registeredListener: 'debug',
-    // info
-    compiledSchema: 'info',
-    load: 'info',
-    reload: 'info',
-    // error
-    error: 'error',
-};
-
 export class ZodConfig<T extends ZodConfigSchemaMap> {
+    private logger: Logger;
+    // Schema
     private schema: T;
     private compiledSchema!: z.ZodObject<{ [K in keyof T]: T[K]['schema'] }>;
-
+    // Config loading
+    private _adapter: Adapter | null = null;
+    private get adapter(): Adapter {
+        if (!this._adapter) {
+            this.logger.log('Adapter not set.', 'error');
+            throw new AdapterError('Adapter not set.');
+        }
+        return this._adapter;
+    }
+    private set adapter(adapter: Adapter) {
+        this._adapter = adapter;
+        this.adapter['logger'] = this.logger;
+        this.logger.log('Adapter set.', 'adapterSet');
+    }
     private _objectOrFileRef?: Record<string, unknown> | string;
     private get objectOrFileRef(): Record<string, unknown> | string {
         if (!this._objectOrFileRef) {
-            this.logger('Config not loaded.', this.getLogLevel('error'));
+            this.logger.log('Config not loaded.', 'error');
             throw new NotLoadedError();
         }
         return structuredClone(this._objectOrFileRef);
@@ -67,30 +53,26 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
     private set objectOrFileRef(value: Record<string, unknown> | string) {
         this._objectOrFileRef = value;
     }
-
-    // A possibly undefined current configuration value.
     private _currentConfigValue?: z.infer<typeof this.compiledSchema>;
-    // Returns the current config value, and throws an error if it is not loaded.
     private get currentConfigValue(): z.infer<typeof this.compiledSchema> {
         if (!this._currentConfigValue) {
-            this.logger('Config not loaded.', this.getLogLevel('error'));
+            this.logger.log('Config not loaded.', 'error');
             throw new NotLoadedError();
         }
         return this._currentConfigValue;
     }
-
+    // Listeners
     private listenerMap: ListenerMap<z.infer<typeof this.compiledSchema>> = {};
-
+    // Reloading
     private intervalCallback: NodeJS.Timeout | null = null;
     private reloadIntervalMs?: number;
-
-    private logMethod?: LogMethod;
-    private logger: LogMethod = (message, level) => {
-        if (this.logMethod) this.logMethod(message, level);
-    };
-    private logLevelMap = defaultLogLevels;
-    private getLogLevel(event: LogEvents): LogLevels {
-        return this.logLevelMap[event];
+    private _loadMethod: typeof this.load | typeof this.loadSync | null = null;
+    private get loadMethod(): typeof this.load | typeof this.loadSync {
+        if (!this._loadMethod) {
+            this.logger.log('Config not loaded.', 'error');
+            throw new NotLoadedError();
+        }
+        return this._loadMethod;
     }
 
     constructor({
@@ -98,12 +80,17 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
         reloadIntervalMs,
         logger,
         logLevelMap,
+        customAdapter,
     }: {
         schema: T | ((zod: typeof z) => T);
         reloadIntervalMs?: number;
-        logger?: LogMethod | boolean;
+        logger?: LogFunction | boolean;
         logLevelMap?: Partial<LogLevelsMap>;
+        customAdapter?: Adapter;
     }) {
+        this.logger = new Logger({ logger, logLevelMap });
+        if (customAdapter) this.adapter = customAdapter;
+
         if (typeof schema === 'function') {
             this.schema = schema(z);
         } else {
@@ -112,16 +99,33 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
         this.compileSchema();
 
         if (reloadIntervalMs) this.reloadIntervalMs = reloadIntervalMs;
-        if (logger) {
-            if (logger === true) {
-                this.logMethod = (message, level) => {
-                    if (level === 'silent') return;
-                    console[level](message);
-                };
-            } else this.logMethod = logger;
-        }
-        if (logLevelMap)
-            this.logLevelMap = { ...defaultLogLevels, ...logLevelMap };
+    }
+
+    /**
+     * Loads configuration from a given object or file reference.
+     * If a file path is provided, the configuration will be loaded from the file.
+     * If an object is provided, it will be used directly as the configuration.
+     * The loaded configuration is then merged with environment values and parsed.
+     * @param objectOrFileRef A configuration object or a file path to load the configuration from.
+     */
+    public async load(
+        objectOrFileRef: Record<string, unknown> | string,
+    ): Promise<void> {
+        this.preLoad(objectOrFileRef);
+        const rawConfig = await this.adapter.load(objectOrFileRef);
+        this.postLoad(rawConfig);
+    }
+    /**
+     * Loads configuration from a given object or file reference synchronously.
+     * If a file path is provided, the configuration will be loaded from the file.
+     * If an object is provided, it will be used directly as the configuration.
+     * The loaded configuration is then merged with environment values and parsed.
+     * @param objectOrFileRef A configuration object or a file path to load the configuration from.
+     */
+    public loadSync(objectOrFileRef: Record<string, unknown> | string): void {
+        this.preLoad(objectOrFileRef);
+        const rawConfig = this.adapter.loadSync(objectOrFileRef);
+        this.postLoad(rawConfig);
     }
 
     /**
@@ -134,9 +138,9 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
     ): KeyValue<typeof this.currentConfigValue, K> {
         const value = structuredClone(this.currentConfigValue[key]);
 
-        this.logger(
+        this.logger.log(
             `Retrieved configuration value for key: ${String(key)}`,
-            this.getLogLevel('get'),
+            'get',
         );
 
         return value;
@@ -154,12 +158,12 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
         const oldValue = structuredClone(this.currentConfigValue[key]);
         this.currentConfigValue[key] = structuredClone(value);
 
-        this.logger(
+        this.logger.log(
             `Set configuration value for key: ${String(key)}`,
-            this.getLogLevel('set'),
+            'set',
         );
 
-        this.runListeners(key, structuredClone(value), oldValue);
+        this.runListener(key, structuredClone(value), oldValue);
     }
 
     /**
@@ -176,107 +180,32 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
         }
         this.listenerMap[key]?.push(listener);
 
-        this.logger(
+        this.logger.log(
             `Registered listener for key: ${String(key)}`,
-            this.getLogLevel('registeredListener'),
+            'registeredListener',
         );
     }
 
     /**
-     * Runs all listeners for a specific key with the new and old values.
-     * @param key The key to run listeners for.
-     * @param newValue The new value.
-     * @param oldValue The old value.
+     * Starts a reload interval that reloads the configuration from the object or file reference at the specified interval.
+     * @param intervalMs The interval in milliseconds at which to reload the configuration.
      */
-    private runListeners<K extends ObjectKeys<typeof this.currentConfigValue>>(
-        key: K,
-        newValue: KeyValue<typeof this.currentConfigValue, K>,
-        oldValue: KeyValue<typeof this.currentConfigValue, K>,
-    ): void {
-        this.logger(
-            `Running listeners for key: ${String(key)}`,
-            this.getLogLevel('runListeners'),
-        );
+    public startReloadInterval(intervalMs?: number): void {
+        if (!this.intervalCallback) {
+            if (intervalMs)
+                this.intervalCallback =
+                    this.createReloadIntervalCallback(intervalMs);
+            else if (this.reloadIntervalMs)
+                this.intervalCallback = this.createReloadIntervalCallback(
+                    this.reloadIntervalMs,
+                );
 
-        this.listenerMap[key]?.forEach((listener) =>
-            listener(newValue, oldValue),
-        );
-    }
-
-    /**
-     * Compiles the schema by transforming the `this.schema` object into a Zod schema.
-     * It maps each key-value pair in `this.schema` to a new object where each value is replaced by its `schema` property.
-     * The resulting object is then used to create a Zod object schema, which is assigned to `this.compiledSchema`.
-     */
-    private compileSchema() {
-        const schemaDef = Object.fromEntries(
-            Object.entries(this.schema).map(([key, value]) => [
-                key,
-                value.schema,
-            ]),
-        ) as { [K in keyof T]: T[K]['schema'] };
-        this.compiledSchema = z.object(schemaDef);
-
-        this.logger(
-            'Compiled schema successfully.',
-            this.getLogLevel('compiledSchema'),
-        );
-    }
-
-    /**
-     * Loads configuration from a given object or file reference.
-     * If a file path is provided, the configuration will be loaded from the file.
-     * If an object is provided, it will be used directly as the configuration.
-     * The loaded configuration is then merged with environment values and parsed.
-     * @param objectOrFileRef A configuration object or a file path to load the configuration from.
-     */
-    public async load(
-        objectOrFileRef: Record<string, unknown> | string,
-    ): Promise<void> {
-        // Store the object or file reference for later use.
-        this.objectOrFileRef = objectOrFileRef;
-
-        this.loadValues(
-            typeof this.objectOrFileRef === 'string'
-                ? await this.loadFile(this.objectOrFileRef)
-                : this.objectOrFileRef,
-        );
-    }
-
-    /**
-     * Loads configuration from a given object or file reference synchronously.
-     * If a file path is provided, the configuration will be loaded from the file.
-     * If an object is provided, it will be used directly as the configuration.
-     * The loaded configuration is then merged with environment values and parsed.
-     * @param objectOrFileRef A configuration object or a file path to load the configuration from.
-     */
-    public loadSync(objectOrFileRef: Record<string, unknown> | string): void {
-        // Store the object or file reference for later use.
-        this.objectOrFileRef = objectOrFileRef;
-
-        this.loadValues(
-            typeof this.objectOrFileRef === 'string'
-                ? this.loadFileSync(this.objectOrFileRef)
-                : this.objectOrFileRef,
-        );
-    }
-
-    /**
-     * Loads configuration values from a given object.
-     * @param values The object to load the configuration values from.
-     */
-    private loadValues(values: Record<string, unknown>): void {
-        const envValues = this.getEnvValues();
-        this.parseValues({ ...values, ...envValues });
-
-        // Start the reload interval if it is not already running.
-        if (!this.intervalCallback && this.reloadIntervalMs)
-            this.startReloadInterval(this.reloadIntervalMs);
-
-        this.logger(
-            'Loaded configuration successfully.',
-            this.getLogLevel('load'),
-        );
+            if (this.intervalCallback)
+                this.logger.log(
+                    'Started reload interval.',
+                    'startReloadInterval',
+                );
+        }
     }
 
     /**
@@ -288,70 +217,91 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
             this.intervalCallback = null;
         }
 
-        this.logger(
-            'Stopped reload interval.',
-            this.getLogLevel('stopReloadInterval'),
-        );
+        this.logger.log('Stopped reload interval.', 'stopReloadInterval');
     }
 
     /**
-     * Starts a reload interval that reloads the configuration from the object or file reference at the specified interval.
-     * @param intervalMs The interval in milliseconds at which to reload the configuration.
+     * Sets the adapter to be used for loading configuration.
+     * @param adapter The adapter to be used for loading configuration.
      */
-    public startReloadInterval(intervalMs: number): void {
-        this.intervalCallback = this.createReloadIntervalCallback(intervalMs);
-
-        this.logger(
-            'Started reload interval.',
-            this.getLogLevel('startReloadInterval'),
-        );
+    public setAdapter(adapter?: Adapter): void {
+        if (adapter) this.adapter = adapter;
+        if (this._adapter) return;
+        if (typeof this.objectOrFileRef === 'string') {
+            if (this.objectOrFileRef.endsWith('.json')) {
+                this.adapter = new JsonAdapter();
+            }
+            if (this.objectOrFileRef.endsWith('.yaml')) {
+                this.adapter = new YamlAdapter();
+            }
+        } else {
+            this.adapter = new ObjectAdapter();
+        }
     }
 
-    /**
-     * Returns an interval callback that reloads the configuration from the object or file reference.
-     * @param intervalMs The interval in milliseconds at which to reload the configuration.
-     * @returns A callback that reloads the configuration at the specified interval.
-     */
-    private createReloadIntervalCallback(intervalMs: number): NodeJS.Timeout {
-        return setInterval(() => {
-            this.load(this.objectOrFileRef);
-            this.logger(
-                'Reloaded configuration successfully.',
-                this.getLogLevel('reload'),
-            );
-        }, intervalMs);
+    private compileSchema() {
+        const schemaDef = Object.fromEntries(
+            Object.entries(this.schema).map(([key, value]) => [
+                key,
+                value.schema,
+            ]),
+        ) as { [K in keyof T]: T[K]['schema'] };
+        this.compiledSchema = z.object(schemaDef);
+
+        this.logger.log('Compiled schema successfully.', 'compiledSchema');
     }
 
-    /**
-     * Parses the given object using the compiled schema and assigns the result to the `currentConfigValue` property.
-     * @param object The object to be parsed, represented as a record with string keys and unknown values.
-     */
-    private parseValues(object: Record<string, unknown>): void {
-        const oldConfig = this._currentConfigValue;
+    private preLoad(objectOrFileRef: Record<string, unknown> | string): void {
+        this.objectOrFileRef = objectOrFileRef;
+        this._loadMethod = this.loadSync;
+        this.setAdapter();
+    }
 
-        this._currentConfigValue = this.compiledSchema.parse(object);
+    private postLoad(rawConfig: Record<string, unknown>): void {
+        const oldValues = structuredClone(this._currentConfigValue);
+        this._currentConfigValue = this.mergeAndParseValues(rawConfig);
+        this.runListeners(this._currentConfigValue, oldValues);
+        this.startReloadInterval();
+        this.logger.log('Loaded configuration successfully.', 'load');
+    }
 
-        if (oldConfig) {
-            const changedKeys = this.getChangedKeys(
-                oldConfig,
-                this.currentConfigValue,
-            );
+    private mergeAndParseValues(
+        values: Record<string, unknown>,
+    ): z.infer<typeof this.compiledSchema> {
+        const envValues = this.getEnvValues();
+        return this.compiledSchema.parse({ ...values, ...envValues });
+    }
+
+    private getEnvValues(): Record<string, string> {
+        const envValues: Record<string, string> = {};
+        for (const key in this.schema) {
+            if (this.schema[key]?.env) {
+                const envKey = this.schema[key].env;
+                const envValue = process.env[envKey];
+                if (envValue) {
+                    envValues[key] = envValue;
+                }
+            }
+        }
+        return envValues;
+    }
+
+    private runListeners(
+        newValues: z.infer<typeof this.compiledSchema>,
+        oldValues?: z.infer<typeof this.compiledSchema>,
+    ): void {
+        if (oldValues) {
+            const changedKeys = this.getChangedKeys(oldValues, newValues);
             for (const changedKey of changedKeys) {
-                this.runListeners(
+                this.runListener(
                     changedKey,
-                    this.currentConfigValue[changedKey],
-                    oldConfig[changedKey],
+                    newValues[changedKey],
+                    oldValues[changedKey],
                 );
             }
         }
     }
 
-    /**
-     * Returns an array of keys that have changed between the old and new configuration objects.
-     * @param oldConfig The old configuration object.
-     * @param newConfig The new configuration object.
-     * @returns The keys that have changed between the old and new configuration objects.
-     */
     private getChangedKeys(
         oldConfig: typeof this.currentConfigValue,
         newConfig: typeof this.currentConfigValue,
@@ -369,99 +319,31 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
         return changedKeys;
     }
 
-    /**
-     * Loads and parses a configuration file asynchronous.
-     * @param fileRef The path reference to the configuration file.
-     * @returns A promise that resolves to a record containing the parsed configuration data.
-     */
-    private async loadFile(fileRef: string): Promise<Record<string, unknown>> {
-        const pathToConfig = path.resolve(fileRef);
-        const config = await this.readFile(pathToConfig);
-        return this.parseConfig(config);
+    private runListener<K extends ObjectKeys<typeof this.currentConfigValue>>(
+        key: K,
+        newValue: KeyValue<typeof this.currentConfigValue, K>,
+        oldValue: KeyValue<typeof this.currentConfigValue, K>,
+    ): void {
+        this.logger.log(
+            `Running listeners for key: ${String(key)}`,
+            'runListeners',
+        );
+
+        this.listenerMap[key]?.forEach((listener) =>
+            listener(newValue, oldValue),
+        );
     }
 
-    /**
-     * Loads and parses a configuration file.
-     * @param fileRef The path reference to the configuration file.
-     * @returns A record containing the parsed configuration data.
-     */
-    private loadFileSync(fileRef: string): Record<string, unknown> {
-        const pathToConfig = path.resolve(fileRef);
-        const config = this.readFileSync(pathToConfig);
-        return this.parseConfig(config);
-    }
-
-    /**
-     * Reads the content of a file at the specified file path asynchronous.
-     * @param filePath The path to the file to be read.
-     * @returns A promise that resolves to the utf-8 encoded content of the file as a string.
-     * @throws A ReadError if the file cannot be read.
-     */
-    private async readFile(filePath: string): Promise<string> {
-        try {
-            return await readFile(filePath, { encoding: 'utf-8' });
-        } catch {
-            this.logger(
-                `Could not read file at ${filePath}.`,
-                this.getLogLevel('error'),
-            );
-            throw new ReadError(`Could not read file at ${filePath}.`);
-        }
-    }
-
-    /**
-     * Reads the content of a file at the specified file path.
-     * @param filePath The path to the file to be read.
-     * @returns The utf-8 encoded content of the file as a string.
-     * @throws A ReadError if the file cannot be read.
-     */
-    private readFileSync(filePath: string): string {
-        try {
-            return readFileSync(filePath, { encoding: 'utf-8' });
-        } catch {
-            this.logger(
-                `Could not read file at ${filePath}.`,
-                this.getLogLevel('error'),
-            );
-            throw new ReadError(`Could not read file at ${filePath}.`);
-        }
-    }
-
-    /**
-     * Parses a JSON configuration string and returns it as a record.
-     * @param config The JSON configuration string to parse.
-     * @returns A record containing the parsed configuration data.
-     * @throws A ParseError if the configuration string cannot be parsed.
-     */
-    private parseConfig(config: string): Record<string, unknown> {
-        const parsedConfig = jsonParser.safeParse(config);
-        if (!parsedConfig.success) {
-            this.logger(
-                'Could not parse configuration.',
-                this.getLogLevel('error'),
-            );
-            throw new ParseError();
-        }
-        return parsedConfig.data;
-    }
-
-    /**
-     * Retrieves environment variable values based on the schema.
-     * This method iterates over the schema and checks if each key has an associated environment variable defined.
-     * If an environment variable is found, its value is added to the returned record.
-     * @returns An object containing the environment variable values mapped to their corresponding schema keys.
-     */
-    private getEnvValues(): Record<string, string> {
-        const envValues: Record<string, string> = {};
-        for (const key in this.schema) {
-            if (this.schema[key]?.env) {
-                const envKey = this.schema[key].env;
-                const envValue = process.env[envKey];
-                if (envValue) {
-                    envValues[key] = envValue;
-                }
-            }
-        }
-        return envValues;
+    private createReloadIntervalCallback(intervalMs: number): NodeJS.Timeout {
+        return setInterval(async () => {
+            await this.loadMethod(this.objectOrFileRef);
+            this.logger.log('Reloaded configuration successfully.', 'reload');
+        }, intervalMs);
     }
 }
+
+export { Adapter } from './adapters/Adapter';
+export { JsonAdapter } from './adapters/JsonAdapter';
+export { ObjectAdapter } from './adapters/ObjectAdapter';
+export { YamlAdapter } from './adapters/YamlAdapter';
+export * from './errors';

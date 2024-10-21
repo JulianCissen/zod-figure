@@ -5,7 +5,7 @@ const jsdoc = require('eslint-plugin-jsdoc');
 const globals = require('globals');
 
 const customJsRules = {
-    //'sort-imports': 'error',
+    'sort-imports': 'error',
 };
 const customTsRules = {
     '@typescript-eslint/consistent-type-imports': [
