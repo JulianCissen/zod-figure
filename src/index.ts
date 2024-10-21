@@ -23,11 +23,16 @@ type ListenerMap<T> = {
     [K in ObjectKeys<T>]?: ListenerFunction<T[K]>[];
 };
 
+type CompiledSchema<T extends ZodConfigSchemaMap> = z.ZodObject<{
+    [K in keyof T]: T[K]['schema'];
+}>;
+type SchemaValue<T extends ZodConfigSchemaMap> = z.infer<CompiledSchema<T>>;
+
 export class ZodConfig<T extends ZodConfigSchemaMap> {
     private logger: Logger;
     // Schema
     private schema: T;
-    private compiledSchema!: z.ZodObject<{ [K in keyof T]: T[K]['schema'] }>;
+    private compiledSchema!: CompiledSchema<T>;
     // Config loading
     private _adapter: Adapter | null = null;
     private get adapter(): Adapter {
@@ -53,8 +58,8 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
     private set objectOrFileRef(value: Record<string, unknown> | string) {
         this._objectOrFileRef = value;
     }
-    private _currentConfigValue?: z.infer<typeof this.compiledSchema>;
-    private get currentConfigValue(): z.infer<typeof this.compiledSchema> {
+    private _currentConfigValue?: SchemaValue<T>;
+    private get currentConfigValue(): SchemaValue<T> {
         if (!this._currentConfigValue) {
             this.logger.log('Config not loaded.', 'error');
             throw new NotLoadedError();
@@ -62,7 +67,7 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
         return this._currentConfigValue;
     }
     // Listeners
-    private listenerMap: ListenerMap<z.infer<typeof this.compiledSchema>> = {};
+    private listenerMap: ListenerMap<SchemaValue<T>> = {};
     // Reloading
     private intervalCallback: NodeJS.Timeout | null = null;
     private reloadIntervalMs?: number;
@@ -133,9 +138,9 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
      * @param key A string key representing the value to be returned.
      * @returns The value at the specified path.
      */
-    public get<K extends ObjectKeys<typeof this.currentConfigValue>>(
+    public get<K extends ObjectKeys<SchemaValue<T>>>(
         key: K,
-    ): KeyValue<typeof this.currentConfigValue, K> {
+    ): KeyValue<SchemaValue<T>, K> {
         const value = structuredClone(this.currentConfigValue[key]);
 
         this.logger.log(
@@ -151,9 +156,9 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
      * @param key A string key representing the value to be changed.
      * @param value The new value to set at the specified path.
      */
-    public set<K extends ObjectKeys<typeof this.currentConfigValue>>(
+    public set<K extends ObjectKeys<SchemaValue<T>>>(
         key: K,
-        value: KeyValue<typeof this.currentConfigValue, K>,
+        value: KeyValue<SchemaValue<T>, K>,
     ): void {
         const oldValue = structuredClone(this.currentConfigValue[key]);
         this.currentConfigValue[key] = structuredClone(value);
@@ -171,9 +176,9 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
      * @param key The key to listen to.
      * @param listener The listener function to be called when the key changes.
      */
-    public addListener<K extends ObjectKeys<typeof this.currentConfigValue>>(
+    public addListener<K extends ObjectKeys<SchemaValue<T>>>(
         key: K,
-        listener: ListenerFunction<(typeof this.currentConfigValue)[K]>,
+        listener: ListenerFunction<SchemaValue<T>>,
     ): void {
         if (!this.listenerMap[key]) {
             this.listenerMap[key] = [];
@@ -267,7 +272,7 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
 
     private mergeAndParseValues(
         values: Record<string, unknown>,
-    ): z.infer<typeof this.compiledSchema> {
+    ): SchemaValue<T> {
         const envValues = this.getEnvValues();
         return this.compiledSchema.parse({ ...values, ...envValues });
     }
@@ -287,8 +292,8 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
     }
 
     private runListeners(
-        newValues: z.infer<typeof this.compiledSchema>,
-        oldValues?: z.infer<typeof this.compiledSchema>,
+        newValues: SchemaValue<T>,
+        oldValues?: SchemaValue<T>,
     ): void {
         if (oldValues) {
             const changedKeys = this.getChangedKeys(oldValues, newValues);
@@ -303,12 +308,12 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
     }
 
     private getChangedKeys(
-        oldConfig: typeof this.currentConfigValue,
-        newConfig: typeof this.currentConfigValue,
-    ): ObjectKeys<typeof this.currentConfigValue>[] {
-        const changedKeys: ObjectKeys<typeof this.currentConfigValue>[] = [];
+        oldConfig: SchemaValue<T>,
+        newConfig: SchemaValue<T>,
+    ): ObjectKeys<SchemaValue<T>>[] {
+        const changedKeys: ObjectKeys<SchemaValue<T>>[] = [];
         const configKeys = Object.keys(oldConfig) as ObjectKeys<
-            typeof this.currentConfigValue
+            SchemaValue<T>
         >[];
 
         for (const key of configKeys) {
@@ -319,10 +324,10 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
         return changedKeys;
     }
 
-    private runListener<K extends ObjectKeys<typeof this.currentConfigValue>>(
+    private runListener<K extends ObjectKeys<SchemaValue<T>>>(
         key: K,
-        newValue: KeyValue<typeof this.currentConfigValue, K>,
-        oldValue: KeyValue<typeof this.currentConfigValue, K>,
+        newValue: KeyValue<SchemaValue<T>, K>,
+        oldValue: KeyValue<SchemaValue<T>, K>,
     ): void {
         this.logger.log(
             `Running listeners for key: ${String(key)}`,
