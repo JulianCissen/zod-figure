@@ -1,12 +1,12 @@
 ## Installation
 ```sh
-npm install zod-fig
+npm install zod-figureure
 ```
 
 ## Basic usage
 Import ZodConfig:
 ```ts
-import { ZodConfig } from 'zod-fig';
+import { ZodConfig } from 'zod-figureure';
 ```
 
 Create a new ZodConfig instance. You can provide a schema directly, or define a callback function that uses the exposed zod variable to create a new config:
