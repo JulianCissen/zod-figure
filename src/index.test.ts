@@ -413,4 +413,17 @@ describe('ZodConfig', () => {
         zodConfig.loadSync({ port: 3000, host: 'localhost' });
         expect(zodConfig.get('host')).toEqual('localhost');
     });
+
+    it('should load a .yml file using the YamlAdapter by default', async () => {
+        const configFilePath = path.resolve(
+            __dirname,
+            '../tests/fixtures/test-config.yml',
+        );
+        await zodConfig.load(configFilePath);
+        const configObject = {
+            port: 3000,
+            host: 'localhost',
+        };
+        expect(zodConfig['currentConfigValue']).toEqual(configObject);
+    });
 });

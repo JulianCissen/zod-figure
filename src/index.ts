@@ -236,7 +236,10 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
             if (this.objectOrFileRef.endsWith('.json')) {
                 this.adapter = new JsonAdapter();
             }
-            if (this.objectOrFileRef.endsWith('.yaml')) {
+            if (
+                this.objectOrFileRef.endsWith('.yaml') ||
+                this.objectOrFileRef.endsWith('.yml')
+            ) {
                 this.adapter = new YamlAdapter();
             }
         } else {
