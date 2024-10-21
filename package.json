@@ -1,5 +1,5 @@
 {
-    "name": "config-zod",
+    "name": "zodfig",
     "version": "1.1.0",
     "scripts": {
         "test": "jest",

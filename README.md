@@ -1,12 +1,12 @@
 ## Installation
 ```sh
-npm install zod-config
+npm install zodfig
 ```
 
 ## Basic usage
 Import ZodConfig:
 ```ts
-import { ZodConfig } from 'zod-config';
+import { ZodConfig } from 'zodfig';
 ```
 
 Create a new ZodConfig instance. You can provide a schema directly, or define a callback function that uses the exposed zod variable to create a new config:
