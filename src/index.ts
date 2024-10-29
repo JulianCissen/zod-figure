@@ -34,7 +34,20 @@ type PropertySchema<
 type CompiledSchema<T extends ZodConfigSchemaMap> = z.ZodObject<{
     [K in keyof T]: PropertySchema<T, K>;
 }>;
+type EnvSchema<T extends ZodConfigSchemaMap> = z.ZodObject<{
+    [K in keyof T]: T[K] extends ZodConfigProperty
+        ? T[K]['env'] extends string
+            ? z.ZodOptional<T[K]['schema']>
+            : never
+        : never;
+}>;
 type SchemaValue<T extends ZodConfigSchemaMap> = z.infer<CompiledSchema<T>>;
+type EnvSchemaValue<T extends ZodConfigSchemaMap> = z.infer<EnvSchema<T>>;
+
+type ObjectOrFileRef = Record<string, unknown> | string;
+type ObjectOrFileRefParam<T extends ZodConfigSchemaMap> =
+    | ObjectOrFileRef
+    | ((env: EnvSchemaValue<T>) => ObjectOrFileRef);
 
 export class ZodConfig<T extends ZodConfigSchemaMap> {
     private logger: Logger;
@@ -45,6 +58,7 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
         return this._schema;
     }
     private compiledSchema!: CompiledSchema<T>;
+    private compiledEnvSchema!: EnvSchema<T>;
     // Config loading
     private _adapter: Adapter | null = null;
     private get adapter(): Adapter {
@@ -59,15 +73,15 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
         this.adapter['logger'] = this.logger;
         this.logger.log('Adapter set.', 'adapterSet');
     }
-    private _objectOrFileRef?: Record<string, unknown> | string;
-    private get objectOrFileRef(): Record<string, unknown> | string {
+    private _objectOrFileRef?: ObjectOrFileRef;
+    private get objectOrFileRef(): ObjectOrFileRef {
         if (!this._objectOrFileRef) {
             this.logger.log('Config not loaded.', 'error');
             throw new NotLoadedError();
         }
         return structuredClone(this._objectOrFileRef);
     }
-    private set objectOrFileRef(value: Record<string, unknown> | string) {
+    private set objectOrFileRef(value: ObjectOrFileRef) {
         this._objectOrFileRef = value;
     }
     private _currentConfigValue?: SchemaValue<T>;
@@ -114,6 +128,7 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
             this._schema = schema;
         }
         this.compileSchema();
+        this.compileEnvSchema();
 
         if (reloadIntervalMs) this.reloadIntervalMs = reloadIntervalMs;
     }
@@ -125,12 +140,10 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
      * The loaded configuration is then merged with environment values and parsed.
      * @param objectOrFileRef A configuration object or a file path to load the configuration from.
      */
-    public async load(
-        objectOrFileRef: Record<string, unknown> | string,
-    ): Promise<void> {
-        this.preLoad(objectOrFileRef);
-        const rawConfig = await this.adapter.load(objectOrFileRef);
-        this.postLoad(rawConfig);
+    public async load(objectOrFileRef: ObjectOrFileRefParam<T>): Promise<void> {
+        const envVariables = this.preLoad(objectOrFileRef);
+        const rawConfig = await this.adapter.load(this.objectOrFileRef);
+        this.postLoad(envVariables, rawConfig);
     }
     /**
      * Loads configuration from a given object or file reference synchronously.
@@ -139,10 +152,10 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
      * The loaded configuration is then merged with environment values and parsed.
      * @param objectOrFileRef A configuration object or a file path to load the configuration from.
      */
-    public loadSync(objectOrFileRef: Record<string, unknown> | string): void {
-        this.preLoad(objectOrFileRef);
-        const rawConfig = this.adapter.loadSync(objectOrFileRef);
-        this.postLoad(rawConfig);
+    public loadSync(objectOrFileRef: ObjectOrFileRefParam<T>): void {
+        const envVariables = this.preLoad(objectOrFileRef);
+        const rawConfig = this.adapter.loadSync(this.objectOrFileRef);
+        this.postLoad(envVariables, rawConfig);
     }
 
     /**
@@ -273,25 +286,72 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
         this.logger.log('Compiled schema successfully.', 'compiledSchema');
     }
 
-    private preLoad(objectOrFileRef: Record<string, unknown> | string): void {
-        this.objectOrFileRef = objectOrFileRef;
-        this._loadMethod = this.loadSync;
-        this.setAdapter();
+    private compileEnvSchema() {
+        const envSchemaDef = Object.fromEntries(
+            Object.entries(this.schema)
+                .map(([key, value]) => {
+                    if (value instanceof z.ZodSchema) {
+                        return [key, undefined];
+                    }
+                    if (value.env) {
+                        return [key, value.schema.optional()];
+                    }
+                    return [key, undefined];
+                })
+                .filter(([, value]) => value !== undefined),
+        ) as {
+            [K in keyof T]: T[K] extends ZodConfigProperty
+                ? T[K]['env'] extends string
+                    ? z.ZodOptional<T[K]['schema']>
+                    : never
+                : never;
+        };
+        this.compiledEnvSchema = z.object(envSchemaDef);
+
+        this.logger.log(
+            'Compiled env schema successfully.',
+            'compiledEnvSchema',
+        );
     }
 
-    private postLoad(rawConfig: Record<string, unknown>): void {
+    private preLoad(
+        objectOrFileRef: ObjectOrFileRefParam<T>,
+    ): EnvSchemaValue<T> {
+        const envVariables = this.parseEnvValues();
+        // Evaluate objectOrFileRef with envVariables.
+        if (typeof objectOrFileRef === 'function') {
+            this.objectOrFileRef = objectOrFileRef(envVariables);
+        } else this.objectOrFileRef = objectOrFileRef;
+
+        this._loadMethod = this.loadSync;
+        this.setAdapter();
+        return envVariables;
+    }
+
+    private parseEnvValues(): EnvSchemaValue<T> {
+        const envValues = this.getEnvValues();
+        return this.compiledEnvSchema.parse(envValues);
+    }
+
+    private postLoad(
+        envVariables: EnvSchemaValue<T>,
+        rawConfig: Record<string, unknown>,
+    ): void {
         const oldValues = structuredClone(this._currentConfigValue);
-        this._currentConfigValue = this.mergeAndParseValues(rawConfig);
+        this._currentConfigValue = this.mergeAndParseValues(
+            envVariables,
+            rawConfig,
+        );
         this.runListeners(this._currentConfigValue, oldValues);
         this.startReloadInterval();
         this.logger.log('Loaded configuration successfully.', 'load');
     }
 
     private mergeAndParseValues(
+        envVariables: EnvSchemaValue<T>,
         values: Record<string, unknown>,
     ): SchemaValue<T> {
-        const envValues = this.getEnvValues();
-        return this.compiledSchema.parse({ ...values, ...envValues });
+        return this.compiledSchema.parse({ ...values, ...envVariables });
     }
 
     private getEnvValues(): Record<string, string> {

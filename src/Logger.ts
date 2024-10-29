@@ -12,7 +12,8 @@ type LogEvents =
     | 'error'
     | 'runListeners'
     | 'registeredListener'
-    | 'adapterSet';
+    | 'adapterSet'
+    | 'compiledEnvSchema';
 export type LogLevelsMap = Record<LogEvents, LogLevels>;
 const defaultLogLevels: LogLevelsMap = {
     // debug
@@ -22,6 +23,7 @@ const defaultLogLevels: LogLevelsMap = {
     startReloadInterval: 'debug',
     stopReloadInterval: 'debug',
     registeredListener: 'debug',
+    compiledEnvSchema: 'debug',
     // info
     compiledSchema: 'info',
     load: 'info',

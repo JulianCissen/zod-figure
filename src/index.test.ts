@@ -303,7 +303,7 @@ describe('ZodConfig', () => {
         const configObject = { port: 3000, host: 'localhost' };
         zodConfig.loadSync(configObject);
         zodConfig.get('host');
-        expect(consoleDebugSpy).toBeCalledTimes(1);
+        expect(consoleDebugSpy).toBeCalledTimes(2);
         consoleDebugSpy.mockRestore();
     });
 
@@ -345,12 +345,11 @@ describe('ZodConfig', () => {
             schema,
             logger: true,
             logLevelMap: {
-                get: 'silent',
+                compiledEnvSchema: 'silent',
             },
         });
         const configObject = { port: 3000, host: 'localhost' };
         zodConfig.loadSync(configObject);
-        zodConfig.get('host');
         expect(consoleDebugSpy).not.toBeCalled();
         consoleDebugSpy.mockRestore();
     });
@@ -452,5 +451,28 @@ describe('ZodConfig', () => {
         expect(zodConfig.get('host')).toEqual('localhost');
         expect(zodConfig.get('port')).toEqual(3000);
         delete process.env['PORT'];
+    });
+
+    it('should expose environment variables in the load(sync) method', () => {
+        process.env['NODE_ENV'] = 'development';
+        const zodConfig = new ZodConfig({
+            schema: {
+                port: z.coerce.number(),
+                host: z.string(),
+                env: {
+                    schema: z.string(),
+                    env: 'NODE_ENV',
+                },
+            },
+        });
+        zodConfig.loadSync((env) => {
+            if (env.env === 'development')
+                return { port: 3000, host: 'localhost' };
+            return { port: 4000, host: 'remotehost' };
+        });
+        expect(zodConfig.get('host')).toEqual('localhost');
+        expect(zodConfig.get('port')).toEqual(3000);
+        expect(zodConfig.get('env')).toEqual('development');
+        delete process.env['NODE_ENV'];
     });
 });
