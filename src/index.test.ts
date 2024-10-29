@@ -279,6 +279,9 @@ describe('ZodConfig', () => {
         zodConfig.loadSync({});
         expect(zodConfig.get('host')).toEqual('localhost');
         expect(zodConfig.get('port')).toEqual(3000);
+        // Unassign the dotenv variables
+        delete process.env['PORT'];
+        delete process.env['HOST'];
     });
 
     it('should not log when logger is set to false', () => {
