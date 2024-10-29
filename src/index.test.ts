@@ -457,25 +457,36 @@ describe('ZodConfig', () => {
     });
 
     it('should expose environment variables in the load(sync) method', () => {
-        process.env['NODE_ENV'] = 'development';
+        process.env['FOO'] = 'bar';
         const zodConfig = new ZodConfig({
             schema: {
                 port: z.coerce.number(),
                 host: z.string(),
-                env: {
+                foo: {
                     schema: z.string(),
-                    env: 'NODE_ENV',
+                    env: 'FOO',
                 },
             },
         });
         zodConfig.loadSync((env) => {
-            if (env.env === 'development')
-                return { port: 3000, host: 'localhost' };
+            if (env.foo === 'bar') return { port: 3000, host: 'localhost' };
             return { port: 4000, host: 'remotehost' };
         });
         expect(zodConfig.get('host')).toEqual('localhost');
         expect(zodConfig.get('port')).toEqual(3000);
-        expect(zodConfig.get('env')).toEqual('development');
-        delete process.env['NODE_ENV'];
+        expect(zodConfig.get('foo')).toEqual('bar');
+        delete process.env['FOO'];
+    });
+
+    it('should allow a manual reload of the configuration', async () => {
+        const zodConfig = new ZodConfig({
+            schema,
+        });
+        const configObject = { port: 3000, host: 'localhost' };
+        zodConfig.loadSync(configObject);
+        configObject.host = 'remotehost';
+        expect(zodConfig.get('host')).toEqual('localhost');
+        await zodConfig.reload();
+        expect(zodConfig.get('host')).toEqual('remotehost');
     });
 });

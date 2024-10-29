@@ -141,7 +141,7 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
      * @param objectOrFileRef A configuration object or a file path to load the configuration from.
      */
     public async load(objectOrFileRef: ObjectOrFileRefParam<T>): Promise<void> {
-        const envVariables = this.preLoad(objectOrFileRef);
+        const envVariables = this.preLoad(objectOrFileRef, this.load);
         const rawConfig = await this.adapter.load(this.objectOrFileRef);
         this.postLoad(envVariables, rawConfig);
     }
@@ -153,7 +153,7 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
      * @param objectOrFileRef A configuration object or a file path to load the configuration from.
      */
     public loadSync(objectOrFileRef: ObjectOrFileRefParam<T>): void {
-        const envVariables = this.preLoad(objectOrFileRef);
+        const envVariables = this.preLoad(objectOrFileRef, this.loadSync);
         const rawConfig = this.adapter.loadSync(this.objectOrFileRef);
         this.postLoad(envVariables, rawConfig);
     }
@@ -272,6 +272,14 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
         }
     }
 
+    /**
+     * Reloads the configuration from the object or file reference.
+     */
+    public async reload(): Promise<void> {
+        await this.loadMethod(this.objectOrFileRef);
+        this.logger.log('Reloaded configuration successfully.', 'reload');
+    }
+
     private compileSchema() {
         const schemaDef = Object.fromEntries(
             Object.entries(this.schema).map(([key, value]) => {
@@ -316,6 +324,7 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
 
     private preLoad(
         objectOrFileRef: ObjectOrFileRefParam<T>,
+        loadMethod: typeof this.load | typeof this.loadSync,
     ): EnvSchemaValue<T> {
         const envVariables = this.parseEnvValues();
         // Evaluate objectOrFileRef with envVariables.
@@ -323,7 +332,7 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
             this.objectOrFileRef = objectOrFileRef(envVariables);
         } else this.objectOrFileRef = objectOrFileRef;
 
-        this._loadMethod = this.loadSync;
+        this._loadMethod = loadMethod;
         this.setAdapter();
         return envVariables;
     }
