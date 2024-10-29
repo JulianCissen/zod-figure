@@ -8,7 +8,7 @@ import isEqual from 'lodash.isequal';
 import { z } from 'zod';
 
 type ZodConfigSchemaMap = {
-    [key: string]: ZodConfigProperty;
+    [key: string]: ZodConfigProperty | z.ZodSchema;
 };
 interface ZodConfigProperty<T extends z.ZodSchema = z.ZodSchema> {
     schema: T;
@@ -23,8 +23,16 @@ type ListenerMap<T> = {
     [K in ObjectKeys<T>]?: ListenerFunction<T[K]>[];
 };
 
+type PropertySchema<
+    T extends ZodConfigSchemaMap,
+    K extends keyof T,
+> = T[K] extends ZodConfigProperty
+    ? T[K]['schema']
+    : T[K] extends z.ZodSchema
+      ? T[K]
+      : never;
 type CompiledSchema<T extends ZodConfigSchemaMap> = z.ZodObject<{
-    [K in keyof T]: T[K]['schema'];
+    [K in keyof T]: PropertySchema<T, K>;
 }>;
 type SchemaValue<T extends ZodConfigSchemaMap> = z.infer<CompiledSchema<T>>;
 
@@ -253,11 +261,13 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
 
     private compileSchema() {
         const schemaDef = Object.fromEntries(
-            Object.entries(this.schema).map(([key, value]) => [
-                key,
-                value.schema,
-            ]),
-        ) as { [K in keyof T]: T[K]['schema'] };
+            Object.entries(this.schema).map(([key, value]) => {
+                if (value instanceof z.ZodSchema) {
+                    return [key, value];
+                }
+                return [key, value.schema];
+            }),
+        ) as { [K in keyof T]: PropertySchema<T, K> };
         this.compiledSchema = z.object(schemaDef);
 
         this.logger.log('Compiled schema successfully.', 'compiledSchema');
@@ -287,7 +297,10 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
     private getEnvValues(): Record<string, string> {
         const envValues: Record<string, string> = {};
         for (const key in this.schema) {
-            if (this.schema[key]?.env) {
+            if (
+                !(this.schema[key] instanceof z.ZodSchema) &&
+                this.schema[key]?.env
+            ) {
                 const envKey = this.schema[key].env;
                 const envValue = process.env[envKey];
                 if (envValue) {

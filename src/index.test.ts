@@ -426,4 +426,31 @@ describe('ZodConfig', () => {
         };
         expect(zodConfig['currentConfigValue']).toEqual(configObject);
     });
+
+    it('should be possible to define a schema directly in stead of using the ZodConfigProperty definition', () => {
+        const zodConfig = new ZodConfig({
+            schema: {
+                port: z.coerce.number(),
+                host: z.string(),
+            },
+        });
+        const configObject = { port: 3000, host: 'localhost' };
+        zodConfig.loadSync(configObject);
+        expect(zodConfig.get('host')).toEqual('localhost');
+        expect(zodConfig.get('port')).toEqual(3000);
+    });
+
+    it('should be possible to use a mixed schema definition', () => {
+        const zodConfig = new ZodConfig({
+            schema: {
+                port: { schema: z.coerce.number(), env: 'PORT' },
+                host: z.string(),
+            },
+        });
+        process.env['PORT'] = '3000';
+        zodConfig.loadSync({ host: 'localhost' });
+        expect(zodConfig.get('host')).toEqual('localhost');
+        expect(zodConfig.get('port')).toEqual(3000);
+        delete process.env['PORT'];
+    });
 });
