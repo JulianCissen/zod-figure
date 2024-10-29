@@ -355,7 +355,7 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type InferConfigValue<T extends ZodConfig<any>> = z.infer<
+export type inferZodConfigValue<T extends ZodConfig<any>> = z.infer<
     CompiledSchema<T['schema']>
 >;
 
