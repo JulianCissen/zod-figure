@@ -31,7 +31,11 @@ type SchemaValue<T extends ZodConfigSchemaMap> = z.infer<CompiledSchema<T>>;
 export class ZodConfig<T extends ZodConfigSchemaMap> {
     private logger: Logger;
     // Schema
-    private schema: T;
+    private _schema: T;
+    // Define a public getter, so the type can be inferred in a compiled context, but the value can't be changed.
+    public get schema(): T {
+        return this._schema;
+    }
     private compiledSchema!: CompiledSchema<T>;
     // Config loading
     private _adapter: Adapter | null = null;
@@ -97,9 +101,9 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
         if (customAdapter) this.adapter = customAdapter;
 
         if (typeof schema === 'function') {
-            this.schema = schema(z);
+            this._schema = schema(z);
         } else {
-            this.schema = schema;
+            this._schema = schema;
         }
         this.compileSchema();
 
@@ -349,6 +353,11 @@ export class ZodConfig<T extends ZodConfigSchemaMap> {
         }, intervalMs);
     }
 }
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type InferConfigValue<T extends ZodConfig<any>> = z.infer<
+    CompiledSchema<T['schema']>
+>;
 
 export { Adapter } from './adapters/Adapter';
 export { JsonAdapter } from './adapters/JsonAdapter';
